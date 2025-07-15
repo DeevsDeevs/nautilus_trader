@@ -51,7 +51,7 @@ nautilus-network = { workspace = true }
 nautilus-serialization = { workspace = true }
 
 # Hyperliquid SDK
-hyperliquid_rust_sdk = "0.6.0"
+hyperliquid_rust_sdk = { git = "https://github.com/hyperliquid-dex/hyperliquid-rust-sdk.git" }
 
 ahash = { workspace = true }
 anyhow = { workspace = true }
@@ -102,3 +102,7 @@ path = "bin/ws-data.rs"
 [[bin]]
 name = "hyperliquid-ws-exec"
 path = "bin/ws-exec.rs"
+
+[[bin]]
+name = "hyperliquid-http-instruments"
+path = "bin/http-instruments.rs"

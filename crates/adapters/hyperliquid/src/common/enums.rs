@@ -12,3 +12,18 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
+
+use serde::{Deserialize, Serialize};
+use strum::{Display, EnumString};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Display, EnumString)]
+#[serde(rename_all = "camelCase")]
+#[strum(serialize_all = "camelCase")]
+pub enum HyperliquidInstrumentType {
+    #[serde(rename = "spot")]
+    #[strum(serialize = "spot")]
+    Spot,
+    #[serde(rename = "perp")]
+    #[strum(serialize = "perp")]
+    Perp,
+}
