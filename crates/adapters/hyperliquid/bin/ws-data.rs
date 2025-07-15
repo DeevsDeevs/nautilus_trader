@@ -15,5 +15,44 @@
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    use hyperliquid_rust_sdk::BaseUrl;
+    use nautilus_hyperliquid::websocket::client::HyperliquidWebSocketClient;
+    use nautilus_model::identifiers::AccountId;
+
+    // Initialize tracing for debug logs
+    tracing_subscriber::fmt::init();
+
+    println!("Testing structured Hyperliquid WebSocket client...");
+
+    // Create account ID (dummy for public data)
+    let account_id = AccountId::new("HYPERLIQUID-001");
+
+    // Create the structured WebSocket client
+    let mut client = HyperliquidWebSocketClient::new(
+        account_id,
+        Some(BaseUrl::Mainnet),
+        None, // No instruments cache for this test
+    );
+
+    // Connect to WebSocket
+    println!("Connecting to Hyperliquid...");
+    client.connect().await?;
+
+    // Subscribe to BTC orderbook
+    println!("Subscribing to BTC orderbook...");
+    client.subscribe_order_book("BTC".to_string()).await?;
+
+    // Get current subscriptions
+    let subscriptions = client.get_subscriptions().await;
+    println!("Active subscriptions: {:?}", subscriptions);
+
+    // Wait and monitor for actual messages
+    println!("Monitoring for WebSocket messages (5 seconds)...");
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+    // Shutdown gracefully
+    client.close().await?;
+
+    println!("Test completed successfully!");
     Ok(())
 }

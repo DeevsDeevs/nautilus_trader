@@ -12,3 +12,38 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
+
+use serde::{Deserialize, Serialize};
+use strum::{Display, EnumString};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Display, EnumString)]
+#[serde(rename_all = "camelCase")]
+#[strum(serialize_all = "camelCase")]
+pub enum HyperliquidWsChannel {
+    #[serde(rename = "l2Book")]
+    #[strum(serialize = "l2Book")]
+    L2Book,
+    Trades,
+    Bbo,
+    AllMids,
+    Candles,
+    User,
+    Orders,
+    UserFills,
+    UserFunding,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct HyperliquidSubscriptionArg {
+    pub channel: HyperliquidWsChannel,
+    pub coin: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum NautilusWsMessage {
+    OrderBookDeltas(Vec<nautilus_model::data::OrderBookDelta>),
+    TradeTicks(Vec<nautilus_model::data::TradeTick>),
+    QuoteTicks(Vec<nautilus_model::data::QuoteTick>),
+    Heartbeat,
+    Error(String),
+}

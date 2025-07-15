@@ -12,3 +12,34 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
+
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum HyperliquidWsError {
+    #[error("Connection error: {0}")]
+    Connection(String),
+
+    #[error("Subscription error: {0}")]
+    Subscription(String),
+
+    #[error("Message parsing error: {0}")]
+    MessageParsing(String),
+
+    #[error("Authentication error: {0}")]
+    Authentication(String),
+
+    #[error("Rate limit exceeded: {0}")]
+    RateLimit(String),
+
+    #[error("Channel error: {0}")]
+    Channel(String),
+
+    #[error("Hyperliquid SDK error: {0}")]
+    Sdk(#[from] hyperliquid_rust_sdk::Error),
+
+    #[error("General error: {0}")]
+    General(String),
+}
+
+pub type Result<T> = std::result::Result<T, HyperliquidWsError>;
