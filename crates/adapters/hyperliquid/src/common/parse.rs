@@ -15,13 +15,14 @@
 
 use std::{str::FromStr, sync::LazyLock};
 
+use ahash::AHashMap;
 use hyperliquid_rust_sdk::{AssetMeta, Meta, SpotAssetMeta, SpotMeta};
 use nautilus_core::nanos::UnixNanos;
 use nautilus_model::{
     currencies::CURRENCY_MAP,
     enums::CurrencyType,
     identifiers::{InstrumentId, Symbol, Venue},
-    instruments::{CryptoPerpetual, CurrencyPair, InstrumentAny},
+    instruments::{CryptoPerpetual, CurrencyPair, Instrument, InstrumentAny},
     types::{Currency, Price, Quantity},
 };
 use rust_decimal::Decimal;
@@ -178,11 +179,30 @@ fn parse_spot_instrument(
     Ok(Some(InstrumentAny::CurrencyPair(instrument)))
 }
 
+pub fn parse_instruments_from_spot_meta_with_asset_ids(
+    spot_meta: SpotMeta,
+) -> Result<(Vec<InstrumentAny>, AHashMap<Ustr, String>)> {
+    let mut instruments = Vec::new();
+    let mut asset_id_map = AHashMap::new();
+    let ts_init = UnixNanos::default();
+
+    for spot_asset in &spot_meta.universe {
+        if let Some(instrument) = parse_spot_instrument(spot_asset, &spot_meta, ts_init)? {
+            let symbol_ustr = instrument.symbol().inner();
+            let asset_id = format!("@{}", spot_asset.index);
+            asset_id_map.insert(symbol_ustr, asset_id);
+            instruments.push(instrument);
+        }
+    }
+
+    Ok((instruments, asset_id_map))
+}
+
 fn parse_symbol(name: &str, instrument_type: HyperliquidInstrumentType) -> Result<Symbol> {
     let symbol_str = match instrument_type {
         HyperliquidInstrumentType::Perp => format!("{}-USDC-PERP", name),
         HyperliquidInstrumentType::Spot => {
-            format!("{}-USDC", name)
+            format!("{}-USDC-SPOT", name)
         }
     };
     Ok(Symbol::from_str_unchecked(&symbol_str))

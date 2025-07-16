@@ -41,7 +41,7 @@ pub struct HyperliquidSubscriptionArg {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum NautilusWsMessage {
-    OrderBookDeltas(Vec<nautilus_model::data::OrderBookDelta>),
+    OrderBookDeltas(nautilus_model::data::deltas::OrderBookDeltas),
     TradeTicks(Vec<nautilus_model::data::TradeTick>),
     QuoteTicks(Vec<nautilus_model::data::QuoteTick>),
     Heartbeat,

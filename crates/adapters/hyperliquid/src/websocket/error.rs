@@ -38,6 +38,12 @@ pub enum HyperliquidWsError {
     #[error("Hyperliquid SDK error: {0}")]
     Sdk(#[from] hyperliquid_rust_sdk::Error),
 
+    #[error("Invalid instrument: {0}")]
+    InvalidInstrument(String),
+
+    #[error("Parse error: {0}")]
+    Parse(String),
+
     #[error("General error: {0}")]
     General(String),
 }

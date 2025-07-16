@@ -25,44 +25,50 @@ use std::{
 
 use ahash::{AHashMap, AHashSet};
 use async_stream::stream;
-use dashmap::DashMap;
 use futures_util::Stream;
 use hyperliquid_rust_sdk::{BaseUrl, InfoClient, Message, Subscription};
+use nautilus_core::nanos::UnixNanos;
 use nautilus_network::ratelimiter::quota::Quota;
 use tokio::sync::{Mutex, mpsc};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info};
 use ustr::Ustr;
 
 use nautilus_model::{
-    identifiers::AccountId,
+    enums::BookAction,
+    identifiers::{AccountId, InstrumentId},
     instruments::{Instrument, InstrumentAny},
 };
 
-use crate::websocket::{
+use super::{
     enums::{HyperliquidWsChannel, NautilusWsMessage},
     error::{HyperliquidWsError, Result},
+    parse::parse_l2_book_data,
 };
 
 /// Default Hyperliquid WebSocket rate limit: 10 requests per second.
-/// Based on Hyperliquid API documentation.
 pub static HYPERLIQUID_WS_QUOTA: LazyLock<Quota> =
     LazyLock::new(|| Quota::per_second(NonZeroU32::new(10).unwrap()));
-
-/// Hyperliquid WebSocket burst rate limit: 1000 requests.
-/// Maximum burst capacity before rate limiting kicks in.
-pub static HYPERLIQUID_WS_BURST_QUOTA: LazyLock<Quota> =
-    LazyLock::new(|| Quota::per_second(NonZeroU32::new(1000).unwrap()));
 
 #[derive(Clone)]
 pub struct HyperliquidWebSocketClient {
     base_url: BaseUrl,
     account_id: AccountId,
     info_client: Option<Arc<Mutex<InfoClient>>>,
-    rx: Option<Arc<Mutex<mpsc::UnboundedReceiver<NautilusWsMessage>>>>,
+    rx: Option<Arc<mpsc::UnboundedReceiver<NautilusWsMessage>>>,
+    tx: Option<mpsc::UnboundedSender<NautilusWsMessage>>,
     signal: Arc<AtomicBool>,
-    subscriptions: Arc<Mutex<AHashMap<HyperliquidWsChannel, AHashSet<String>>>>,
-    subscription_ids: Arc<DashMap<u32, (HyperliquidWsChannel, String)>>,
+    subscriptions: Arc<Mutex<AHashMap<HyperliquidWsChannel, AHashSet<Ustr>>>>,
     instruments_cache: Arc<AHashMap<Ustr, InstrumentAny>>,
+    symbol_to_asset_id: Arc<AHashMap<Ustr, String>>,
+    subscription_handles: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+}
+
+impl Debug for HyperliquidWebSocketClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HyperliquidWebSocketClient")
+            .field("account_id", &self.account_id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl HyperliquidWebSocketClient {
@@ -72,14 +78,12 @@ impl HyperliquidWebSocketClient {
         instruments: Option<Vec<InstrumentAny>>,
     ) -> Self {
         let instruments_cache = if let Some(instruments) = instruments {
-            Arc::new(
-                instruments
-                    .into_iter()
-                    .map(|inst| (inst.id().symbol.as_str().into(), inst))
-                    .collect(),
-            )
+            instruments
+                .into_iter()
+                .map(|inst| (inst.symbol().inner(), inst))
+                .collect()
         } else {
-            Arc::new(AHashMap::new())
+            AHashMap::new()
         };
 
         Self {
@@ -87,204 +91,199 @@ impl HyperliquidWebSocketClient {
             account_id,
             info_client: None,
             rx: None,
+            tx: None,
             signal: Arc::new(AtomicBool::new(false)),
             subscriptions: Arc::new(Mutex::new(AHashMap::new())),
-            subscription_ids: Arc::new(DashMap::new()),
-            instruments_cache,
+            instruments_cache: Arc::new(instruments_cache),
+            symbol_to_asset_id: Arc::new(AHashMap::new()),
+            subscription_handles: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn new_with_asset_ids(
+        account_id: AccountId,
+        base_url: Option<BaseUrl>,
+        instruments: Vec<InstrumentAny>,
+        asset_id_map: AHashMap<Ustr, String>,
+    ) -> Self {
+        let instruments_cache = instruments
+            .into_iter()
+            .map(|inst| (inst.symbol().inner(), inst))
+            .collect();
+
+        Self {
+            base_url: base_url.unwrap_or(BaseUrl::Mainnet),
+            account_id,
+            info_client: None,
+            rx: None,
+            tx: None,
+            signal: Arc::new(AtomicBool::new(false)),
+            subscriptions: Arc::new(Mutex::new(AHashMap::new())),
+            instruments_cache: Arc::new(instruments_cache),
+            symbol_to_asset_id: Arc::new(asset_id_map),
+            subscription_handles: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     pub async fn connect(&mut self) -> Result<()> {
-        debug!("Connecting to Hyperliquid WebSocket");
-
-        let info_client = InfoClient::new(None, Some(self.base_url))
+        let info_client = InfoClient::new(None, Some(self.base_url.clone()))
             .await
-            .map_err(|e| HyperliquidWsError::Sdk(e))?;
+            .map_err(HyperliquidWsError::Sdk)?;
 
         self.info_client = Some(Arc::new(Mutex::new(info_client)));
 
-        let (_tx, rx) = mpsc::unbounded_channel();
-        self.rx = Some(Arc::new(Mutex::new(rx)));
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.tx = Some(tx);
+        self.rx = Some(Arc::new(rx));
 
+        tokio::time::sleep(Duration::from_millis(100)).await;
         info!("Connected to Hyperliquid WebSocket successfully");
         Ok(())
     }
 
-    pub async fn subscribe_order_book(&mut self, coin: String) -> Result<()> {
+    pub async fn subscribe_order_book(&self, instrument_id: InstrumentId) -> Result<()> {
+        let full_symbol = instrument_id.symbol.to_string();
+        let full_symbol_ustr = Ustr::from(&full_symbol);
+
+        // Check that the instrument exists in our cache
+        if !self.instruments_cache.contains_key(&full_symbol_ustr) {
+            return Err(HyperliquidWsError::InvalidInstrument(full_symbol));
+        }
+
+        // Get the proper asset ID for this symbol
+        let coin = self
+            .symbol_to_asset_id
+            .get(&full_symbol_ustr)
+            .ok_or_else(|| {
+                HyperliquidWsError::InvalidInstrument(format!(
+                    "No asset ID mapping for symbol: {}",
+                    full_symbol
+                ))
+            })?
+            .clone();
+
         let info_client = self
             .info_client
             .as_ref()
             .ok_or(HyperliquidWsError::Connection("Not connected".to_string()))?
             .clone();
 
-        debug!("Subscribing to orderbook for coin: {}", coin);
+        let main_tx = self
+            .tx
+            .as_ref()
+            .ok_or(HyperliquidWsError::Connection(
+                "Output channel not initialized".to_string(),
+            ))?
+            .clone();
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let instrument = self
+            .instruments_cache
+            .get(&full_symbol_ustr)
+            .unwrap()
+            .clone();
 
-        let subscription_id = {
-            let mut client = info_client.lock().await;
-            client
-                .subscribe(Subscription::L2Book { coin: coin.clone() }, tx)
-                .await
-                .map_err(|e| HyperliquidWsError::Sdk(e))?
-        };
+        // Create subscription channel
+        let (sdk_tx, mut sdk_rx) = mpsc::unbounded_channel();
 
+        // Subscribe via SDK
         {
-            let mut subscriptions = self.subscriptions.lock().await;
-            subscriptions
-                .entry(HyperliquidWsChannel::L2Book)
-                .or_insert_with(AHashSet::new)
-                .insert(coin.clone());
+            let mut client = info_client.lock().await;
+            let subscription = Subscription::L2Book { coin: coin.clone() };
+            client
+                .subscribe(subscription, sdk_tx)
+                .await
+                .map_err(HyperliquidWsError::Sdk)?;
         }
 
-        self.subscription_ids.insert(
-            subscription_id,
-            (HyperliquidWsChannel::L2Book, coin.clone()),
-        );
-
-        info!(
-            "Subscribed to orderbook for {} with ID: {}",
-            coin, subscription_id
-        );
-
-        let _instruments_cache = self.instruments_cache.clone();
+        // Spawn task to forward messages
         let signal = self.signal.clone();
-
-        tokio::spawn(async move {
-            while let Some(message) = rx.recv().await {
+        let task_handle = tokio::spawn(async move {
+            while let Some(message) = sdk_rx.recv().await {
                 if signal.load(Ordering::Relaxed) {
                     break;
                 }
 
-                match message {
-                    Message::L2Book(book_data) => {
-                        debug!(
-                            "Received L2Book data for {}: {} bids, {} asks, time: {}",
-                            book_data.data.coin,
-                            book_data.data.levels[0].len(),
-                            book_data.data.levels[1].len(),
-                            book_data.data.time
-                        );
+                if let Message::L2Book(book_data) = message {
+                    let ts_init = UnixNanos::default();
 
-                        // Log first few levels for verification
-                        if !book_data.data.levels[0].is_empty()
-                            && !book_data.data.levels[1].is_empty()
-                        {
-                            debug!(
-                                "  Best bid: {} @ {}, Best ask: {} @ {}",
-                                book_data.data.levels[0][0].sz,
-                                book_data.data.levels[0][0].px,
-                                book_data.data.levels[1][0].sz,
-                                book_data.data.levels[1][0].px
-                            );
+                    match parse_l2_book_data(
+                        &book_data.data,
+                        instrument_id,
+                        instrument.price_precision(),
+                        instrument.size_precision(),
+                        &BookAction::Add,
+                        ts_init,
+                    ) {
+                        Ok(deltas) => {
+                            let nautilus_msg = NautilusWsMessage::OrderBookDeltas(deltas);
+                            if let Err(e) = main_tx.send(nautilus_msg) {
+                                error!("Failed to send parsed message: {}", e);
+                                break;
+                            }
                         }
-                    }
-                    _ => {
-                        warn!("Received unexpected message type: {:?}", message);
+                        Err(e) => {
+                            error!("Failed to parse L2Book message: {}", e);
+                        }
                     }
                 }
             }
         });
 
-        Ok(())
-    }
-
-    pub async fn unsubscribe(&mut self, subscription_id: u32) -> Result<()> {
-        let info_client = self
-            .info_client
-            .as_ref()
-            .ok_or(HyperliquidWsError::Connection("Not connected".to_string()))?
-            .clone();
-
+        // Store task handle
         {
-            let mut client = info_client.lock().await;
-            client
-                .unsubscribe(subscription_id)
-                .await
-                .map_err(|e| HyperliquidWsError::Sdk(e))?;
+            let mut handles = self.subscription_handles.lock().await;
+            handles.push(task_handle);
         }
 
-        if let Some((_, (channel, coin))) = self.subscription_ids.remove(&subscription_id) {
+        // Update subscriptions tracking
+        {
             let mut subscriptions = self.subscriptions.lock().await;
-            if let Some(coins) = subscriptions.get_mut(&channel) {
-                coins.remove(&coin);
-                if coins.is_empty() {
-                    subscriptions.remove(&channel);
-                }
-            }
+            subscriptions
+                .entry(HyperliquidWsChannel::L2Book)
+                .or_default()
+                .insert(full_symbol_ustr);
         }
 
-        info!("Unsubscribed from subscription ID: {}", subscription_id);
+        debug!("Subscribed to orderbook for instrument: {}", instrument_id);
         Ok(())
     }
 
-    pub fn stream(&mut self) -> impl Stream<Item = NautilusWsMessage> + 'static {
-        let rx = self.rx.take();
-        let signal = self.signal.clone();
+    pub async fn close(&mut self) -> Result<()> {
+        self.signal.store(true, Ordering::Relaxed);
 
-        stream! {
-            if let Some(rx) = rx {
-                let mut rx = rx.lock().await;
-                while let Some(message) = rx.recv().await {
-                    if signal.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    yield message;
-                }
+        // Abort all subscription tasks
+        {
+            let mut handles = self.subscription_handles.lock().await;
+            for handle in handles.drain(..) {
+                handle.abort();
             }
         }
-    }
 
-    pub async fn close(&self) -> Result<()> {
-        info!("Shutting down Hyperliquid WebSocket client");
-        self.signal.store(true, Ordering::Relaxed);
         tokio::time::sleep(Duration::from_millis(100)).await;
         Ok(())
     }
 
-    pub async fn resubscribe_all(&mut self) -> Result<()> {
-        info!("Resubscribing to all active subscriptions");
-
-        let subscriptions = {
-            let subs = self.subscriptions.lock().await;
-            subs.clone()
-        };
-
-        for (channel, coins) in subscriptions {
-            match channel {
-                HyperliquidWsChannel::L2Book => {
-                    for coin in coins {
-                        self.subscribe_order_book(coin).await?;
-                    }
-                }
-                _ => {
-                    warn!("Resubscription not implemented for channel: {:?}", channel);
-                }
-            }
-        }
-
-        Ok(())
-    }
-
     pub fn is_active(&self) -> bool {
-        self.info_client.is_some()
+        self.info_client.is_some() && !self.signal.load(Ordering::Relaxed)
     }
 
     pub fn is_closed(&self) -> bool {
         self.signal.load(Ordering::Relaxed)
     }
 
-    pub async fn get_subscriptions(&self) -> AHashMap<HyperliquidWsChannel, AHashSet<String>> {
+    pub fn stream(&mut self) -> impl Stream<Item = NautilusWsMessage> + 'static {
+        let rx = self.rx.take().expect("Data stream receiver already taken");
+        let mut rx = Arc::try_unwrap(rx).expect("Cannot take ownership of receiver");
+
+        stream! {
+            while let Some(data) = rx.recv().await {
+                yield data;
+            }
+        }
+    }
+
+    pub async fn get_subscriptions(&self) -> AHashMap<HyperliquidWsChannel, AHashSet<Ustr>> {
         let subscriptions = self.subscriptions.lock().await;
         subscriptions.clone()
-    }
-}
-
-impl Debug for HyperliquidWebSocketClient {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HyperliquidWebSocketClient")
-            .field("account_id", &self.account_id)
-            .field("is_active", &self.is_active())
-            .finish_non_exhaustive()
     }
 }

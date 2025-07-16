@@ -21,7 +21,6 @@ use std::{
 
 use ahash::AHashMap;
 use hyperliquid_rust_sdk::{BaseUrl, InfoClient, Meta, SpotMeta};
-use nautilus_core::nanos::UnixNanos;
 use nautilus_model::{
     identifiers::AccountId,
     instruments::{Instrument, InstrumentAny},
@@ -30,7 +29,10 @@ use nautilus_network::ratelimiter::quota::Quota;
 use ustr::Ustr;
 
 use super::error::{HyperliquidHttpError, Result};
-use crate::common::parse::{parse_instruments_from_meta, parse_instruments_from_spot_meta};
+use crate::common::parse::{
+    parse_instruments_from_meta, parse_instruments_from_spot_meta,
+    parse_instruments_from_spot_meta_with_asset_ids,
+};
 
 /// Default Hyperliquid REST API rate limit: 20 requests per second.
 /// Based on Hyperliquid API documentation.
@@ -142,18 +144,37 @@ impl HyperliquidHttpClient {
         Ok(instruments)
     }
 
-    fn get_instrument_from_cache(&self, symbol: Ustr) -> anyhow::Result<InstrumentAny> {
-        self.instruments_cache
-            .lock()
-            .expect("`instruments_cache` lock poisoned")
-            .get(&symbol)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Instrument {symbol} not in cache"))
+    pub async fn instruments_with_asset_ids(
+        &mut self,
+    ) -> Result<(Vec<InstrumentAny>, AHashMap<Ustr, String>)> {
+        let mut instruments = Vec::new();
+        let mut asset_id_map = AHashMap::new();
+
+        // Parse perp instruments
+        let meta = self.inner.meta().await?;
+        let perp_instruments = parse_instruments_from_meta(meta)?;
+
+        // Add perp asset IDs (use coin name)
+        for inst in &perp_instruments {
+            let symbol_str = inst.symbol().to_string();
+            let coin = symbol_str.split('-').next().unwrap_or(&symbol_str);
+            asset_id_map.insert(inst.symbol().inner(), coin.to_string());
+        }
+
+        instruments.extend(perp_instruments);
+
+        // Parse spot instruments with asset IDs
+        let spot_meta = self.inner.spot_meta().await?;
+        let (spot_instruments, spot_asset_ids) =
+            parse_instruments_from_spot_meta_with_asset_ids(spot_meta)?;
+        instruments.extend(spot_instruments);
+        asset_id_map.extend(spot_asset_ids);
+
+        self.add_cached_instruments(&instruments);
+
+        Ok((instruments, asset_id_map))
     }
 
-    fn generate_ts_init(&self) -> UnixNanos {
-        UnixNanos::default()
-    }
 
     #[must_use]
     pub const fn is_initialized(&self) -> bool {

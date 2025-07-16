@@ -12,3 +12,38 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HyperliquidBookLevel {
+    pub px: String,
+    pub sz: String,
+    pub n: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HyperliquidL2BookMsg {
+    pub coin: String,
+    pub time: u64,
+    pub levels: Vec<Vec<HyperliquidBookLevel>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HyperliquidTradeMsg {
+    pub coin: String,
+    pub side: String,
+    pub px: String,
+    pub sz: String,
+    pub time: u64,
+    pub hash: String,
+    pub tid: u64,
+    pub users: (String, String),
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HyperliquidBboMsg {
+    pub coin: String,
+    pub time: u64,
+    pub levels: Vec<Vec<HyperliquidBookLevel>>,
+}

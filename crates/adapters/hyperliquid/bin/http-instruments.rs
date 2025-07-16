@@ -86,10 +86,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Show first 5 parsed instruments
-    let mut perp_count = 0;
-    let mut spot_count = 0;
-
-    // Show first few perps and then find first few spots
     for (i, instrument) in instruments.iter().take(5).enumerate() {
         match instrument {
             nautilus_model::instruments::InstrumentAny::CryptoPerpetual(perp) => {
@@ -97,14 +93,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "  Perp {}: {} (price_increment: {}, size_increment: {})",
                     i, perp.id, perp.price_increment, perp.size_increment
                 );
-                perp_count += 1;
             }
             nautilus_model::instruments::InstrumentAny::CurrencyPair(spot) => {
                 println!(
                     "  Spot {}: {} (price_increment: {}, size_increment: {})",
                     i, spot.id, spot.price_increment, spot.size_increment
                 );
-                spot_count += 1;
             }
             _ => println!("  Other {}: {:?}", i, instrument),
         }
