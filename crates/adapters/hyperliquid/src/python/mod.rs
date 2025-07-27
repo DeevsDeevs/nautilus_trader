@@ -24,6 +24,8 @@ use pyo3::prelude::*;
 
 /// Loaded as `nautilus_pyo3.hyperliquid`.
 #[pymodule]
-pub fn hyperliquid(_: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> {
+pub fn hyperliquid(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<crate::http::client::HyperliquidHttpClient>()?;
+    m.add_class::<crate::websocket::client::HyperliquidWebSocketClient>()?;
     Ok(())
 }

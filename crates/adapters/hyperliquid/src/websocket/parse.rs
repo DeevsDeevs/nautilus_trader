@@ -37,8 +37,8 @@ use super::{
 pub fn parse_l2_book_msg(
     msg: &HyperliquidL2BookMsg,
     instrument_id: InstrumentId,
-    price_precision: u8,
-    size_precision: u8,
+    _price_precision: u8,
+    _size_precision: u8,
     action: &BookAction,
     ts_init: UnixNanos,
 ) -> Result<OrderBookDeltas> {

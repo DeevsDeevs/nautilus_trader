@@ -50,9 +50,13 @@ pub static HYPERLIQUID_WS_QUOTA: LazyLock<Quota> =
     LazyLock::new(|| Quota::per_second(NonZeroU32::new(10).unwrap()));
 
 #[derive(Clone)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.hyperliquid")
+)]
 pub struct HyperliquidWebSocketClient {
-    base_url: BaseUrl,
-    account_id: AccountId,
+    pub(crate) base_url: BaseUrl,
+    pub(crate) account_id: AccountId,
     info_client: Option<Arc<Mutex<InfoClient>>>,
     rx: Option<Arc<mpsc::UnboundedReceiver<NautilusWsMessage>>>,
     tx: Option<mpsc::UnboundedSender<NautilusWsMessage>>,

@@ -12,3 +12,86 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
+
+from typing import Any
+
+from nautilus_trader.adapters.hyperliquid.config import HyperliquidInstrumentProviderConfig
+from nautilus_trader.adapters.hyperliquid.constants import HYPERLIQUID_VENUE
+from nautilus_trader.common.providers import InstrumentProvider
+from nautilus_trader.core import nautilus_pyo3
+from nautilus_trader.core.correctness import PyCondition
+from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.instruments import instruments_from_pyo3
+
+
+class HyperliquidInstrumentProvider(InstrumentProvider):
+    """
+    Provides Nautilus instrument definitions from Hyperliquid.
+
+    Parameters
+    ----------
+    client : nautilus_pyo3.HyperliquidHttpClient
+        The Hyperliquid HTTP client.
+    config : HyperliquidInstrumentProviderConfig, optional
+        The instrument provider configuration, by default None.
+
+    """
+
+    def __init__(
+        self,
+        client: nautilus_pyo3.HyperliquidHttpClient,
+        config: HyperliquidInstrumentProviderConfig | None = None,
+    ) -> None:
+        super().__init__(config=config)
+        self._client = client
+        self._log_warnings = config.log_warnings if config else True
+
+        self._instruments_pyo3: list[nautilus_pyo3.Instrument] = []
+
+    def instruments_pyo3(self) -> list[Any]:
+        """
+        Return all Hyperliquid PyO3 instrument definitions held by the provider.
+
+        Returns
+        -------
+        list[nautilus_pyo3.Instrument]
+
+        """
+        return self._instruments_pyo3
+
+    async def load_all_async(self, filters: dict | None = None) -> None:
+        filters_str = "..." if not filters else f" with filters {filters}..."
+        self._log.info(f"Loading all instruments{filters_str}")
+
+        pyo3_instruments = self._client.request_instruments()
+        self._instruments_pyo3 = pyo3_instruments
+        instruments = instruments_from_pyo3(pyo3_instruments)
+        for instrument in instruments:
+            self.add(instrument=instrument)
+
+        self._log.info(f"Loaded {len(self._instruments)} instruments")
+
+    async def load_ids_async(
+        self,
+        instrument_ids: list[InstrumentId],
+        filters: dict | None = None,
+    ) -> None:
+        if not instrument_ids:
+            self._log.warning("No instrument IDs given for loading")
+            return
+
+        for instrument_id in instrument_ids:
+            PyCondition.equal(instrument_id.venue, HYPERLIQUID_VENUE, "instrument_id.venue", "HYPERLIQUID")
+
+        pyo3_instruments = self._client.request_instruments()
+        self._instruments_pyo3 = pyo3_instruments
+        instruments = instruments_from_pyo3(pyo3_instruments)
+
+        for instrument in instruments:
+            if instrument.id not in instrument_ids:
+                continue  # Filter instrument ID
+            self.add(instrument=instrument)
+
+    async def load_async(self, instrument_id: InstrumentId, filters: dict | None = None) -> None:
+        PyCondition.not_none(instrument_id, "instrument_id")
+        await self.load_ids_async([instrument_id], filters)

@@ -40,7 +40,8 @@ pub static HYPERLIQUID_REST_QUOTA: LazyLock<Quota> =
     LazyLock::new(|| Quota::per_second(NonZeroU32::new(20).unwrap()));
 
 pub struct HyperliquidHttpInnerClient {
-    account_id: AccountId,
+    pub(crate) account_id: AccountId,
+    pub(crate) base_url: BaseUrl,
     info_client: InfoClient,
 }
 
@@ -52,6 +53,7 @@ impl Debug for HyperliquidHttpInnerClient {
     }
 }
 
+
 impl HyperliquidHttpInnerClient {
     pub async fn new(account_id: AccountId, base_url: Option<BaseUrl>) -> Result<Self> {
         let base_url = base_url.unwrap_or(BaseUrl::Mainnet);
@@ -61,6 +63,7 @@ impl HyperliquidHttpInnerClient {
 
         Ok(Self {
             account_id,
+            base_url,
             info_client,
         })
     }
@@ -90,10 +93,14 @@ impl HyperliquidHttpInnerClient {
     }
 }
 
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.hyperliquid")
+)]
 pub struct HyperliquidHttpClient {
-    inner: HyperliquidHttpInnerClient,
+    pub(crate) inner: HyperliquidHttpInnerClient,
     instruments_cache: Arc<Mutex<AHashMap<Ustr, InstrumentAny>>>,
-    cache_initialized: bool,
+    pub(crate) cache_initialized: bool,
 }
 
 impl Debug for HyperliquidHttpClient {
@@ -174,6 +181,7 @@ impl HyperliquidHttpClient {
 
         Ok((instruments, asset_id_map))
     }
+
 
 
     #[must_use]
